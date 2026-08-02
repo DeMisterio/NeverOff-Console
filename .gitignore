@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Secrets. The console holds a Supabase service-role key and a Firebase service
+# account — neither may ever be committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+firebase-service-account*.json
+
+# Local tooling noise
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Generated artefacts
+apps/api/openapi.json
+docs/erd.svg

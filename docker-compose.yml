@@ -1,0 +1,71 @@
+# Local development stack for the NeverOff admin console.
+#
+# This brings up a plain Postgres that stands in for the Supabase project during
+# development. It is NOT Supabase — `npm run db:bootstrap` installs a shim that
+# creates the handful of Supabase-provided primitives our migrations depend on
+# (the `auth` and `storage` schemas, `auth.uid()`, the realtime publication and
+# the anon/authenticated/service_role roles) so the exact same migration files
+# that will later run against the real project can run here first.
+#
+# Nothing in this file ever talks to the production Supabase project.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: neveroff-console-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: console
+      POSTGRES_PASSWORD: console_local_dev
+      POSTGRES_DB: neveroff
+      # Match Supabase's default so collation-sensitive ordering behaves the same.
+      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --encoding=UTF8"
+    ports:
+      - "54322:5432"
+    volumes:
+      - console_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U console -d neveroff"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    command:
+      # pg_stat_statements is used by the (later) analytics phase to find slow
+      # rollup queries; harmless to enable now.
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "log_min_duration_statement=500"
+
+  redis:
+    image: redis:7-alpine
+    container_name: neveroff-console-redis
+    restart: unless-stopped
+    ports:
+      - "54379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - console_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Optional: a UI for poking at the local database while developing.
+  # Started only with `docker compose --profile tools up -d`.
+  adminer:
+    image: adminer:4
+    container_name: neveroff-console-adminer
+    restart: unless-stopped
+    profiles: ["tools"]
+    ports:
+      - "54323:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  console_pgdata:
+  console_redisdata:

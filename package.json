@@ -1,0 +1,47 @@
+{
+  "name": "neveroff-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Admin & Trust/Safety console for the NeverOff messenger platform",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "workspaces": [
+    "packages/shared",
+    "packages/db",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint .",
+    "// build:shared": "Everything imports @neveroff-console/shared, whose package.json points at dist/. Nothing that consumes it works until this has run at least once, so every entry point below depends on it.",
+    "build:shared": "npm run build --workspace @neveroff-console/shared",
+    "postinstall": "npm run build:shared",
+    "dev": "npm run build:shared && concurrently -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "npm run dev --workspace @neveroff-console/api",
+    "dev:web": "npm run dev --workspace @neveroff-console/web",
+    "db:bootstrap": "npm run bootstrap --workspace @neveroff-console/db",
+    "db:migrate": "npm run build:shared && npm run migrate --workspace @neveroff-console/db",
+    "db:migrate:status": "npm run migrate:status --workspace @neveroff-console/db",
+    "db:seed": "npm run build:shared && npm run seed --workspace @neveroff-console/api",
+    "db:reset": "npm run reset --workspace @neveroff-console/db",
+    "stack:up": "docker compose up -d",
+    "stack:down": "docker compose down",
+    "setup:local": "npm run build:shared && npm run stack:up && npm run db:bootstrap && npm run db:migrate && npm run db:seed",
+    "docs:matrix": "npm run build:shared && tsx scripts/generate-permission-matrix.ts",
+    "docs:openapi": "npm run openapi --workspace @neveroff-console/api"
+  },
+  "devDependencies": {
+    "@neveroff-console/shared": "*",
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.0",
+    "eslint": "^9.17.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8"
+  }
+}
