@@ -3,7 +3,14 @@ import { randomBytes } from 'node:crypto';
 import { closePool, describeTarget, getPool, withTransaction } from '@neveroff-console/db';
 
 import { hashPassword } from './auth/password.js';
-import { encryptSecret, enrolmentUri, generateCode, generateSecret } from './auth/totp.js';
+import {
+  encryptSecret,
+  enrolmentUri,
+  generateCode,
+  generateRecoveryCodes,
+  generateSecret,
+  normaliseRecoveryCode,
+} from './auth/totp.js';
 
 /**
  * Create the first Super Admin.
@@ -68,14 +75,24 @@ async function main(): Promise<void> {
   const password = randomBytes(18).toString('base64url');
   const secret = generateSecret();
 
+  // This account is enrolled in TOTP here rather than through the sign-in flow,
+  // which is where recovery codes are normally issued. Without generating them
+  // now the first Super Admin would have none — and it is the one account no
+  // one else can reset, because resetting an admin's second factor requires an
+  // admin. A lost phone would mean hand-written SQL against production.
+  const recoveryCodes = generateRecoveryCodes();
+  const recoveryHashes = await Promise.all(
+    recoveryCodes.map((code) => hashPassword(normaliseRecoveryCode(code))),
+  );
+
   const id = await withTransaction(async (client) => {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO admin.admin_users
          (email, display_name, password_hash, must_change_password, role_key, status,
-          totp_secret_encrypted, totp_enrolled_at)
-       VALUES ($1, $2, $3, TRUE, 'super_admin', 'active', $4, NOW())
+          totp_secret_encrypted, totp_enrolled_at, totp_recovery_hashes)
+       VALUES ($1, $2, $3, TRUE, 'super_admin', 'active', $4, NOW(), $5)
        RETURNING id`,
-      [email, displayName, await hashPassword(password), encryptSecret(secret)],
+      [email, displayName, await hashPassword(password), encryptSecret(secret), recoveryHashes],
     );
 
     const adminId = rows[0]!.id;
@@ -120,6 +137,13 @@ async function main(): Promise<void> {
   Code right now (valid ~30s), to check the secret went in correctly:
 
       ${generateCode(secret)}
+
+  Recovery codes — each works once, and they are the only way into this
+  account if you lose your authenticator. Nobody can reset this account for
+  you, because resetting an admin requires an admin. Store them somewhere
+  other than the machine you sign in from:
+
+${recoveryCodes.map((c) => `      ${c}`).join('\n')}
 
   Sign in, then change the password immediately — the account is flagged
   must_change_password. Delete your shell history if it captured this output.
