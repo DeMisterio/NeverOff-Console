@@ -12,6 +12,7 @@ import { ChannelDetailPage } from './pages/ChannelDetail';
 import { ChannelsPage } from './pages/Channels';
 import { LoginPage } from './pages/Login';
 import { QueuePage } from './pages/Queue';
+import { SupportPage } from './pages/Support';
 import { UserDetailPage } from './pages/UserDetail';
 import { UsersPage } from './pages/Users';
 
@@ -35,6 +36,7 @@ const NAV: NavEntry[] = [
   { to: '/queue', label: 'Queue', permission: 'reports.view' },
   { to: '/users', label: 'Users', permission: 'users.view' },
   { to: '/channels', label: 'Channels', permission: 'channels.view' },
+  { to: '/support', label: 'Support', permission: 'support.view' },
   { to: '/appeals', label: 'Appeals', permission: 'reports.view' },
   { to: '/audit', label: 'Audit log', permission: 'audit.view' },
   { to: '/admins', label: 'Admins', permission: 'users.view' },
@@ -198,6 +200,16 @@ export function App() {
           <RequireAuth>
             <Guarded permission="channels.view">
               <ChannelDetailPage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/support"
+        element={
+          <RequireAuth>
+            <Guarded permission="support.view">
+              <SupportPage />
             </Guarded>
           </RequireAuth>
         }

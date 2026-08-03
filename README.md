@@ -38,15 +38,20 @@ Build-order steps 1, 2 and 4 are implemented (§10 of the spec):
 - **Step 1** — auth, RBAC, admin accounts, immutable audit log
 - **Step 2** — user directory, profiles, the §3.3 enforcement ladder, the ban experience
 - **Step 4** — report intake, case clustering, the prioritised moderation queue, decisions
+- **Step 5** — `@support` ticketing, in-app and reachable while banned
+- **Step 6** — appeals and channel governance
 - Plus **§8 privacy in full** and **§6.7 scaffolded**
 
-Step 4 was taken ahead of step 3 deliberately. It is what the spec calls "the core expansion",
-and it closes the §11 acceptance flow end to end: report → clustered case → queue → 7-day ban →
-ban screen → appeal → *different* moderator → lift → automatic restoration on expiry.
+Step 3 was deferred rather than skipped. Steps 4–6 close the §11 acceptance flow end to end —
+report → clustered case → queue → 7-day ban → ban screen → appeal → *different* moderator → lift
+→ automatic restoration — and analytics is observability on top of a pipeline that now exists.
 
-**Not yet built:** analytics dashboards and the event rollup pipeline (§2, step 3), the
-`@support` ticketing console (§5), channel governance (§6.5), and the automod rules engine
-(§6.6). The automod tables are referenced but the engine is not written.
+**Not yet built:** analytics dashboards and the event rollup pipeline (§2, step 3), and the
+automod rules engine (§6.6). The automod tables are referenced but the engine is not written.
+
+**Known gap:** `disable_forwarding` records the state and the app can read it through
+`channel_restriction_state`, but nothing in the client consumes it yet, and §6.5's forward-chain
+tracking does not exist.
 
 ---
 

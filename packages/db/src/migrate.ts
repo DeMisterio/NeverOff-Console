@@ -35,6 +35,8 @@ const PRODUCTION_TOUCHING = new Set([
   '0012_report_intake.sql',
   // Adds RESTRICTIVE policies to public.channel_posts and channel_subscribers.
   '0013_channel_governance.sql',
+  // Creates the @support RPCs and grants EXECUTE to `authenticated`.
+  '0014_support_tickets.sql',
 ]);
 
 /**
