@@ -528,6 +528,11 @@ and change the password immediately.
 This console can ban every user on your platform. It should not sit open to the
 internet with only a password in front of it.
 
+**The hostname is not a secret, whatever you named it.** Every certificate
+Let's Encrypt issues is published to public Certificate Transparency logs, so
+the address is searchable by anyone within minutes of going live and stays that
+way. Picking an obscure name is not a control; the two below are.
+
 **Restrict by IP.** Set your own address in `.env` and restart the API:
 
 ```
