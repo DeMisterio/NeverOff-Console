@@ -400,6 +400,118 @@ async function seedEnforcement(
   return { bannedUser, appealId: appealRows[0]!.id, caseRef: ban.case_ref };
 }
 
+/**
+ * Seed reports through the real intake RPC rather than by direct insert.
+ *
+ * `auth.uid()` in the local shim reads the `app.current_user_id` GUC, so
+ * impersonating a reporter is a `set_config` away. Going through
+ * `public.submit_report` means the seed exercises clustering, coordination
+ * detection, priority scoring and reporter reputation for real — if any of
+ * that is broken, the seed fails loudly instead of producing tidy-looking rows
+ * that were never touched by the code under test.
+ */
+async function seedReports(
+  client: PoolClient,
+  users: SeededUser[],
+): Promise<{ reports: number; clusteredChannel: string; brigadedUser: string }> {
+  let reports = 0;
+
+  const asUser = async (userId: string, sql: string, params: unknown[]): Promise<void> => {
+    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
+    await client.query(sql, params);
+    reports += 1;
+  };
+
+  const RPC = `SELECT public.submit_report($1, $2, $3, $4, $5, $6, NULL, FALSE, NULL)`;
+
+  // --- §11 acceptance criterion: five reports on one channel become ONE case
+  const channel = await client.query<{ id: string; name: string; owner_id: string }>(
+    `SELECT id, name, owner_id FROM public.channels ORDER BY subscriber_count DESC LIMIT 1`,
+  );
+  const target = channel.rows[0]!;
+  const channelReporters = users.filter((u) => u.id !== target.owner_id).slice(0, 5);
+
+  for (const reporter of channelReporters) {
+    await asUser(reporter.id, RPC, [
+      'channel',
+      target.id,
+      'spam.investment_fraud',
+      'This channel keeps posting guaranteed-return crypto schemes.',
+      'leave_channel',
+      null,
+    ]);
+  }
+
+  // --- A brigading case: many brand-new accounts, all at once, on one user.
+  // detect_coordination should flag it and priority should be pulled down.
+  const brigadeTarget = users.find((u) => u.id !== target.owner_id)!;
+  const freshAccounts = [...users]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .filter((u) => u.id !== brigadeTarget.id)
+    .slice(0, 6);
+
+  for (const reporter of freshAccounts) {
+    await asUser(reporter.id, RPC, [
+      'user',
+      brigadeTarget.id,
+      'harassment.targeted_abuse',
+      'They are being abusive.',
+      'block_user',
+      null,
+    ]);
+  }
+
+  // --- Assorted single reports across categories, with reporter-submitted
+  // evidence on the message ones so the console has something readable.
+  const singles: Array<[string, string, string | null]> = [
+    ['spam.phishing', 'Sent me a link asking for my login code.',
+     'hey this is support, send me the 6 digit code to verify your account'],
+    ['impersonation.brand', 'Pretending to be an official NeverOff account.', null],
+    ['hate.protected_characteristic', 'Slurs directed at a group.', null],
+    ['illegal.counterfeit', 'Selling fake goods in the channel.', null],
+  ];
+
+  for (const [reasonCode, note, evidence] of singles) {
+    const reporter = pick(users);
+    const victim = pick(users.filter((u) => u.id !== reporter.id));
+
+    const message = await client.query<{ id: string }>(
+      `SELECT m.id FROM public.messages m
+         JOIN public.chat_participants cp ON cp.chat_id = m.chat_id
+        WHERE m.sender_id = $1 AND cp.user_id = $2
+        LIMIT 1`,
+      [victim.id, reporter.id],
+    );
+
+    if (message.rows[0]) {
+      await asUser(reporter.id, RPC, [
+        'message', message.rows[0].id, reasonCode, note, 'just_report', evidence,
+      ]);
+    } else {
+      await asUser(reporter.id, RPC, ['user', victim.id, reasonCode, note, 'just_report', null]);
+    }
+  }
+
+  // --- A self-harm report, to show it routing to the escalation path rather
+  // than into the ordinary enforcement flow.
+  const concernedReporter = pick(users);
+  const atRisk = pick(users.filter((u) => u.id !== concernedReporter.id));
+  await asUser(concernedReporter.id, RPC, [
+    'user', atRisk.id, 'self_harm.risk_disclosure',
+    'They posted something that worried me. I think they need help, not a ban.',
+    'just_report', null,
+  ]);
+
+  // Reset the impersonation so nothing downstream runs as a random user.
+  await client.query(`SELECT set_config('app.current_user_id', '', true)`);
+
+  return {
+    reports,
+    clusteredChannel: target.name,
+    brigadedUser: brigadeTarget.username,
+  };
+}
+
 async function verifyConsentGuarantee(client: PoolClient, users: SeededUser[]): Promise<string> {
   const decliner = users.find((u) => !u.analyticsConsent);
   if (!decliner) return 'No declining user was generated — rerun the seed.';
@@ -454,7 +566,10 @@ async function main(): Promise<void> {
     console.log('  enforcement history...');
     const enforcement = await seedEnforcement(client, users, admins);
 
-    return { users, messages, channels, events, admins, enforcement };
+    console.log('  reports and cases...');
+    const reports = await seedReports(client, users);
+
+    return { users, messages, channels, events, admins, enforcement, reports };
   });
 
   // Run outside the main transaction: it deliberately triggers a constraint
@@ -471,6 +586,7 @@ async function main(): Promise<void> {
   channels           ${result.channels}
   telemetry events   ${result.events}
   admin accounts     ${result.admins.length}
+  reports            ${result.reports.reports}
 
   Acceptance criteria set up
   --------------------------
@@ -480,6 +596,10 @@ async function main(): Promise<void> {
                        issued by mod.de@neveroff.test, so that account is barred from
                        reviewing the appeal — sign in as lead.de@neveroff.test to decide it
   expired ban          one ban expired yesterday, awaiting the expiry worker
+  report clustering    5 reports on "${result.reports.clusteredChannel}" collapsed into ONE case
+  brigading detected   6 new accounts reported @${result.reports.brigadedUser} at once; the case is
+                       flagged and its priority deliberately reduced
+  safety routing       one self-harm report routed to escalation, not enforcement
 
   Sign in
   -------

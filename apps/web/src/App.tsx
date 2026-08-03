@@ -7,7 +7,9 @@ import { useAuth } from './lib/auth';
 import { AdminsPage } from './pages/Admins';
 import { AppealsPage } from './pages/Appeals';
 import { AuditPage } from './pages/Audit';
+import { CaseDetailPage } from './pages/CaseDetail';
 import { LoginPage } from './pages/Login';
+import { QueuePage } from './pages/Queue';
 import { UserDetailPage } from './pages/UserDetail';
 import { UsersPage } from './pages/Users';
 
@@ -27,6 +29,8 @@ interface NavEntry {
 }
 
 const NAV: NavEntry[] = [
+  // Queue first: it is where a moderator spends their shift.
+  { to: '/queue', label: 'Queue', permission: 'reports.view' },
   { to: '/users', label: 'Users', permission: 'users.view' },
   { to: '/appeals', label: 'Appeals', permission: 'reports.view' },
   { to: '/audit', label: 'Audit log', permission: 'audit.view' },
@@ -135,6 +139,26 @@ export function App() {
         element={loading ? <Spinner /> : me ? <Navigate to="/users" replace /> : <LoginPage />}
       />
 
+      <Route
+        path="/queue"
+        element={
+          <RequireAuth>
+            <Guarded permission="reports.view">
+              <QueuePage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/queue/:id"
+        element={
+          <RequireAuth>
+            <Guarded permission="reports.view">
+              <CaseDetailPage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
       <Route
         path="/users"
         element={

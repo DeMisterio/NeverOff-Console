@@ -4,37 +4,23 @@ import {
   LADDER,
   RESTRICTABLE_FEATURES,
   isPermission,
-  reasonMeta,
-  validateProposedAction,
 } from '@neveroff-console/shared';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 
-import { raiseAlert, writeAudit } from '../audit.js';
-import {
-  conflict,
-  forbidden,
-  notFound,
-  underLegalHold,
-  validationFailed,
-} from '../errors.js';
+import { writeAudit } from '../audit.js';
+import { conflict, forbidden, notFound, validationFailed } from '../errors.js';
 import { actorOf } from '../plugins/auth.js';
-import {
-  assertBanDurationAllowed,
-  assertInScope,
-  hashPayload,
-  requireBreakGlass,
-  requirePermission,
-} from '../rbac.js';
+import { assertInScope, hashPayload, requirePermission } from '../rbac.js';
+import { applyEnforcement, loadEnforcementTarget } from '../services/enforcement.js';
 
 /**
- * The §3.3 enforcement ladder.
+ * Enforcement, appeals and break-glass approvals.
  *
- * Ordering inside `POST /users/:id/actions` is deliberate and worth preserving:
- * every cheap rejection happens before any side effect, and break-glass is the
- * last check before the write. An admin should never burn a second admin's
- * approval only to be told their reason code was invalid.
+ * The action-application logic lives in services/enforcement.ts because the
+ * moderation case decision panel issues enforcement too, and two copies of the
+ * ban-length cap would eventually disagree.
  */
 
 const BreakGlassInputSchema = z
@@ -45,7 +31,7 @@ const BreakGlassInputSchema = z
   })
   .optional();
 
-const ApplyActionBody = z.object({
+export const ApplyActionBody = z.object({
   type: z.enum(ENFORCEMENT_ACTION_TYPES),
   reasonCode: z.string().min(1).max(80),
   note: z.string().trim().min(10).max(2000),
@@ -56,12 +42,6 @@ const ApplyActionBody = z.object({
   notifyUser: z.boolean().default(true),
   breakGlass: BreakGlassInputSchema,
 });
-
-const REMOVAL_CUTOFF: Record<string, string | null> = {
-  last_24h: '24 hours',
-  last_30d: '30 days',
-  all: null,
-};
 
 export default async function enforcementRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -78,8 +58,6 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
     return value;
   };
 
-  // -------------------------------------------------------------------------
-  // Apply an action
   // -------------------------------------------------------------------------
   app.post(
     '/users/:userId/actions',
@@ -104,253 +82,17 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
     },
     async (request) => {
       const actor = actorOf(request);
-      const { userId } = request.params;
-      const body = request.body;
-      const spec = LADDER[body.type];
-
-      // --- 1. Target exists and is in scope --------------------------------
-      const pool = getPool();
-      const dirResult = await pool.query<{
-        username: string;
-        country: string | null;
-        under_legal_hold: boolean;
-      }>(
-        `SELECT username, country, under_legal_hold FROM admin.user_directory WHERE id = $1`,
-        [userId],
-      );
-      const target = dirResult.rows[0];
-      if (!target) throw notFound('User');
-      assertInScope(actor, { country: target.country });
-
-      // --- 2. Permission for this specific rung ----------------------------
-      requirePermission(actor, spec.requiredPermission);
-
-      // --- 3. Reason must be real, and must not belong to the isolated queue -
-      const reason = reasonMeta(body.reasonCode);
-      if (!reason) {
-        throw validationFailed(
-          `"${body.reasonCode}" is not a reason code in the catalogue.`,
-          { reasonCode: body.reasonCode },
-        );
-      }
-      if (reason.isolated) {
-        // §6.7: child-safety material never passes through general tooling,
-        // including as a reason code on an ordinary enforcement action.
-        throw forbidden(
-          'That reason belongs to the child safety pipeline and cannot be used here. ' +
-            'Route the case through the isolated queue instead.',
-          { reasonCode: body.reasonCode },
-        );
-      }
-      if (reason.category === 'self_harm') {
-        throw forbidden(
-          'Self-harm reports route to the safety escalation path, not to enforcement. ' +
-            'A person disclosing risk is not committing a violation.',
-          { reasonCode: body.reasonCode },
-        );
-      }
-
-      // --- 4. Structural validity ------------------------------------------
-      const structural = validateProposedAction({
-        type: body.type,
-        expiresAt: body.expiresAt,
-        restrictedFeatures: body.restrictedFeatures ?? null,
-        rateLimitPerMinute: body.rateLimitPerMinute ?? null,
-        reasonCode: body.reasonCode,
-        note: body.note,
-      });
-      if (!structural.ok) {
-        throw validationFailed(structural.message, { code: structural.code });
-      }
-
-      // --- 5. Role ban cap --------------------------------------------------
-      if (body.type === 'ban_temporary') {
-        assertBanDurationAllowed(actor, body.expiresAt);
-      }
-      if (body.type === 'ban_permanent') {
-        assertBanDurationAllowed(actor, null);
-      }
-
-      // --- 6. Legal hold ----------------------------------------------------
-      if (body.type === 'account_deletion' && target.under_legal_hold) {
-        throw underLegalHold(
-          `@${target.username} is under an active legal hold. Deletion is blocked until it is released.`,
-        );
-      }
-      if (body.contentRemovalScope !== 'none' && target.under_legal_hold) {
-        throw underLegalHold(
-          `@${target.username} is under an active legal hold. Content removal would destroy ` +
-            'material that is being preserved.',
-        );
-      }
-
-      const targetLabel = `@${target.username}`;
 
       return withTransaction(async (client) => {
-        // --- 7. Break glass, last before the write -------------------------
-        // Content removal is irreversible against end-to-end encrypted
-        // messages — there is no copy anywhere the server can restore from —
-        // so it forces a typed confirmation even on rungs that otherwise need none.
-        const forceMode =
-          body.contentRemovalScope !== 'none' && spec.breakGlass === 'none'
-            ? ('typed_phrase' as const)
-            : undefined;
+        const target = await loadEnforcementTarget(client, request.params.userId);
+        if (!target) throw notFound('User');
+        assertInScope(actor, { country: target.country });
 
-        const breakGlassId = await requireBreakGlass(
-          client,
-          actor,
-          {
-            permission: spec.requiredPermission,
-            action: body.type,
-            targetType: 'user',
-            targetId: userId,
-            targetLabel,
-            payload: {
-              type: body.type,
-              reasonCode: body.reasonCode,
-              expiresAt: body.expiresAt?.toISOString() ?? null,
-              contentRemovalScope: body.contentRemovalScope,
-            },
-            forceMode,
-          },
-          body.breakGlass,
-        );
-
-        // --- 8. Write the action -------------------------------------------
-        const { rows } = await client.query<{ id: string; case_ref: string }>(
-          `INSERT INTO admin.enforcement_actions
-             (user_id, type, reason_code, note, issued_by, issued_by_label,
-              expires_at, restricted_features, rate_limit_per_minute,
-              content_removal_scope, origin, break_glass_request_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'manual', $11)
-           RETURNING id, case_ref`,
-          [
-            userId,
-            body.type,
-            body.reasonCode,
-            body.note,
-            actor.id,
-            `${actor.displayName} <${actor.email}>`,
-            body.expiresAt,
-            body.restrictedFeatures ?? null,
-            body.rateLimitPerMinute ?? null,
-            body.contentRemovalScope,
-            breakGlassId,
-          ],
-        );
-        const action = rows[0]!;
-
-        // --- 9. Content removal, if explicitly chosen ----------------------
-        let removedMessages = 0;
-        let removedPosts = 0;
-
-        if (body.contentRemovalScope !== 'none') {
-          const interval = REMOVAL_CUTOFF[body.contentRemovalScope];
-
-          const msgResult = interval
-            ? await client.query(
-                `DELETE FROM public.messages
-                  WHERE sender_id = $1 AND created_at >= NOW() - $2::interval`,
-                [userId, interval],
-              )
-            : await client.query(`DELETE FROM public.messages WHERE sender_id = $1`, [userId]);
-
-          const postResult = interval
-            ? await client.query(
-                `DELETE FROM public.channel_posts
-                  WHERE author_id = $1 AND created_at >= NOW() - $2::interval`,
-                [userId, interval],
-              )
-            : await client.query(`DELETE FROM public.channel_posts WHERE author_id = $1`, [userId]);
-
-          removedMessages = msgResult.rowCount ?? 0;
-          removedPosts = postResult.rowCount ?? 0;
-        }
-
-        // --- 10. Audit ------------------------------------------------------
-        await writeAudit(client, actor, {
-          action: `user.enforcement.${body.type}`,
-          targetType: 'user',
-          targetId: userId,
-          targetLabel,
-          permission: spec.requiredPermission,
-          reasonCode: body.reasonCode,
-          note: body.note,
-          breakGlassRequestId: breakGlassId,
-          after: {
-            actionId: action.id,
-            caseRef: action.case_ref,
-            type: body.type,
-            expiresAt: body.expiresAt,
-            restrictedFeatures: body.restrictedFeatures ?? null,
-            rateLimitPerMinute: body.rateLimitPerMinute ?? null,
-            contentRemovalScope: body.contentRemovalScope,
-            removedMessages,
-            removedChannelPosts: removedPosts,
-          },
-        });
-
-        // --- 11. Tell the user (§3.3, §4) -----------------------------------
-        // `silent` is the shadow-restriction case: notifying would defeat the
-        // mechanism. Everything else on the ladder that is not purely internal
-        // gets a notification.
-        const shouldNotify =
-          body.notifyUser && spec.visibility === 'notified' && spec.type !== 'note';
-
-        if (shouldNotify) {
-          await client.query(
-            `INSERT INTO admin.notification_outbox
-               (user_id, kind, payload, related_action_id)
-             VALUES ($1, $2, $3, $4)`,
-            [
-              userId,
-              body.type === 'warning' ? 'warning_issued' : 'enforcement_applied',
-              JSON.stringify({
-                case_ref: action.case_ref,
-                action_type: body.type,
-                reason_code: body.reasonCode,
-                policy_clause: reason.policyClause,
-                expires_at: body.expiresAt,
-                appealable: reason.appealable,
-              }),
-              action.id,
-            ],
-          );
-        }
-
-        // --- 12. Shadow restrictions are flagged for review -----------------
-        if (body.type === 'shadow_restriction') {
-          await raiseAlert(client, {
-            kind: 'shadow_restriction_applied',
-            severity: 'medium',
-            title: `${actor.displayName} shadow-restricted ${targetLabel}`,
-            detail:
-              'Shadow restriction is deceptive by construction and §3.3 requires it be used ' +
-              'sparingly. This entry exists so the practice can be reviewed in aggregate.',
-            subjectAdminId: actor.id,
-            evidence: {
-              caseRef: action.case_ref,
-              reasonCode: body.reasonCode,
-              justification: body.note,
-              expiresAt: body.expiresAt,
-            },
-          });
-        }
-
-        return {
-          id: action.id,
-          caseRef: action.case_ref,
-          type: body.type,
-          expiresAt: body.expiresAt,
-          userNotified: shouldNotify,
-          contentRemoved: { messages: removedMessages, channelPosts: removedPosts },
-        };
+        return applyEnforcement(client, actor, target, request.body);
       });
     },
   );
 
-  // -------------------------------------------------------------------------
-  // Reverse an action
   // -------------------------------------------------------------------------
   app.post(
     '/actions/:actionId/reverse',
@@ -380,8 +122,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           username: string;
           country: string | null;
         }>(
-          `SELECT e.id, e.user_id, e.type, e.case_ref, e.reversed_at,
-                  d.username, d.country
+          `SELECT e.id, e.user_id, e.type, e.case_ref, e.reversed_at, d.username, d.country
              FROM admin.enforcement_actions e
              JOIN admin.user_directory d ON d.id = e.user_id
             WHERE e.id = $1
@@ -393,9 +134,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
         if (!action) throw notFound('Enforcement action');
         assertInScope(actor, { country: action.country });
 
-        if (action.reversed_at) {
-          throw conflict('That action has already been reversed.');
-        }
+        if (action.reversed_at) throw conflict('That action has already been reversed.');
         if (action.type === 'account_deletion') {
           // The data is gone. Pretending otherwise would be worse than refusing.
           throw conflict('Account deletion is irreversible and cannot be lifted.');
@@ -543,8 +282,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           slaDueAt: r.sla_due_at,
           escalatedAt: r.escalated_at,
           issuedByAdminId: r.issued_by,
-          // §4: the issuing moderator may not review their own decision. Shown
-          // in the list so nobody claims an appeal they will only have to hand back.
+          // §4: the issuing moderator may not review their own decision.
           reviewableByYou: r.issued_by !== actor.id && actor.permissions.has('reports.resolve'),
         })),
         total: Number(countResult.rows[0]?.total ?? 0),
@@ -565,11 +303,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           decisionNote: z.string().trim().min(10).max(2000),
         }),
         response: {
-          200: z.object({
-            id: z.string(),
-            outcome: z.string(),
-            actionReversed: z.boolean(),
-          }),
+          200: z.object({ id: z.string(), outcome: z.string(), actionReversed: z.boolean() }),
         },
       },
     },
@@ -590,8 +324,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           country: string | null;
         }>(
           `SELECT a.id, a.action_id, a.user_id, a.status,
-                  e.issued_by, e.case_ref, e.type AS action_type,
-                  d.username, d.country
+                  e.issued_by, e.case_ref, e.type AS action_type, d.username, d.country
              FROM admin.appeals a
              JOIN admin.enforcement_actions e ON e.id = a.action_id
              JOIN admin.user_directory d ON d.id = a.user_id
@@ -609,7 +342,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
         }
 
         // Checked here for a readable error; also enforced by a database
-        // trigger, so it holds even if some future code path forgets.
+        // trigger, so it holds even if some future path forgets.
         if (appeal.issued_by && appeal.issued_by === actor.id) {
           throw forbidden(
             'You issued the action being appealed. §4 requires a different reviewer. ' +
@@ -631,14 +364,9 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           requirePermission(actor, 'users.unban');
           await client.query(
             `UPDATE admin.enforcement_actions
-                SET reversed_at = NOW(), reversed_by = $2,
-                    reversal_reason = $3
+                SET reversed_at = NOW(), reversed_by = $2, reversal_reason = $3
               WHERE id = $1 AND reversed_at IS NULL`,
-            [
-              appeal.action_id,
-              actor.id,
-              `Overturned on appeal: ${request.body.decisionNote}`,
-            ],
+            [appeal.action_id, actor.id, `Overturned on appeal: ${request.body.decisionNote}`],
           );
         }
 
@@ -697,9 +425,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           payload: z.record(z.unknown()),
           justification: z.string().trim().min(10).max(1000),
         }),
-        response: {
-          200: z.object({ id: z.string(), expiresAt: z.date(), status: z.string() }),
-        },
+        response: { 200: z.object({ id: z.string(), expiresAt: z.date(), status: z.string() }) },
       },
     },
     async (request) => {
@@ -733,7 +459,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
           action: 'break_glass.requested',
           targetType: 'system',
           targetId: created.id,
-          targetLabel: `${body.permission} on ${body.targetId}`,
+          targetLabel: `${permission} on ${body.targetId}`,
           note: body.justification,
         });
 
@@ -748,7 +474,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
       preHandler: fastify.requireAuth,
       schema: {
         tags: ['enforcement'],
-        summary: 'Pending approval requests you are able to approve',
+        summary: 'Pending approval requests',
         response: {
           200: z.array(
             z.object({
@@ -772,9 +498,8 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
 
       const { rows } = await getPool().query(
         `SELECT b.id, b.permission_key, b.target_type, b.target_id, b.payload,
-                b.justification, b.created_at, b.expires_at,
-                u.display_name || ' <' || u.email || '>' AS requested_by_label,
-                b.requested_by
+                b.justification, b.created_at, b.expires_at, b.requested_by,
+                u.display_name || ' <' || u.email || '>' AS requested_by_label
            FROM admin.break_glass_requests b
            JOIN admin.admin_users u ON u.id = b.requested_by
           WHERE b.status = 'pending' AND b.expires_at > NOW()
@@ -792,10 +517,7 @@ export default async function enforcementRoutes(fastify: FastifyInstance): Promi
         justification: r.justification,
         createdAt: r.created_at,
         expiresAt: r.expires_at,
-        // Approval requires independently holding the permission, and never
-        // being the requester. Both are re-checked on the approve call.
-        youMayApprove:
-          r.requested_by !== actor.id && actor.permissions.has(r.permission_key),
+        youMayApprove: r.requested_by !== actor.id && actor.permissions.has(r.permission_key),
       }));
     },
   );

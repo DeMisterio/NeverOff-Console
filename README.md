@@ -33,13 +33,20 @@ that weakens or bypasses E2EE for moderation convenience.
 
 ## Status
 
-Build-order steps 1–2 are implemented (§10 of the spec): auth, RBAC, admin accounts, audit log,
-user directory, profiles, the enforcement ladder and the ban experience. Plus §8 privacy in full
-and §6.7 scaffolded.
+Build-order steps 1, 2 and 4 are implemented (§10 of the spec):
 
-**Not yet built:** analytics dashboards (§2), report intake and the moderation queue (§6.1–6.6),
-the `@support` ticketing console (§5), channel governance (§6.5), and the automod rules engine.
-Those are steps 3–9.
+- **Step 1** — auth, RBAC, admin accounts, immutable audit log
+- **Step 2** — user directory, profiles, the §3.3 enforcement ladder, the ban experience
+- **Step 4** — report intake, case clustering, the prioritised moderation queue, decisions
+- Plus **§8 privacy in full** and **§6.7 scaffolded**
+
+Step 4 was taken ahead of step 3 deliberately. It is what the spec calls "the core expansion",
+and it closes the §11 acceptance flow end to end: report → clustered case → queue → 7-day ban →
+ban screen → appeal → *different* moderator → lift → automatic restoration on expiry.
+
+**Not yet built:** analytics dashboards and the event rollup pipeline (§2, step 3), the
+`@support` ticketing console (§5), channel governance (§6.5), and the automod rules engine
+(§6.6). The automod tables are referenced but the engine is not written.
 
 ---
 
@@ -221,6 +228,34 @@ exactly where a break occurs.
 Defeating that needs the log shipped to append-only external storage — an object-lock bucket or a
 SIEM. This schema gives you detection, not prevention, against an attacker who already owns the
 database. The runbook covers that as a deployment requirement.
+
+### Evidence is reporter-submitted, because it has to be
+
+When a user reports a message, the server holds ciphertext it cannot read. It cannot snapshot the
+content, show it to a moderator, or classify it. The only party who can produce readable evidence
+is the reporter, whose device already holds the key.
+
+So `evidence_snapshots.source` distinguishes `reporter_submitted` from `server_captured`, and a
+database constraint stops the second being claimed for a message. Channel posts and profile
+fields are plaintext server-side and are captured directly; messages and chat media never can be.
+
+A message report with no reporter-submitted evidence is a metadata-only case. It is still
+actionable on pattern — volume, velocity, the reported account's history — and the queue says so
+rather than showing an empty content pane and letting a moderator assume the report was empty.
+
+Reporter-submitted plaintext is the most sensitive data this console holds, so reading it is a
+separate audited call rather than part of loading the case, and it is logged as a personal-data
+access so the §7 anomaly checks cover it.
+
+### Brigading lowers priority rather than raising it
+
+Coordinated reporting is detected from account age, burst shape and reporting history, and a
+flagged case has its priority multiplied by 0.4. Manufactured volume floating to the top of the
+queue is precisely the outcome a brigade is trying to buy.
+
+Honest limitation: real brigading detection leans on device fingerprints and social-graph
+clustering. This console deliberately collects neither, so the available signals are weaker.
+They flag a case for human attention and never action or dismiss anything by themselves.
 
 ### One source of truth for permissions
 

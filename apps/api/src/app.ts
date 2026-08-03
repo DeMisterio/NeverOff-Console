@@ -21,6 +21,7 @@ import authRoutes from './routes/auth.js';
 import childSafetyRoutes from './routes/childsafety.js';
 import enforcementRoutes from './routes/enforcement.js';
 import healthRoutes from './routes/health.js';
+import moderationRoutes from './routes/moderation.js';
 import privacyRoutes from './routes/privacy.js';
 import roleRoutes from './routes/roles.js';
 import userRoutes from './routes/users.js';
@@ -128,6 +129,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         { name: 'auth', description: 'Sign-in, 2FA, sessions' },
         { name: 'users', description: 'User directory and profiles' },
         { name: 'enforcement', description: 'The §3.3 action ladder and appeals' },
+        { name: 'moderation', description: 'Report clustering, the case queue and decisions' },
         { name: 'admins', description: 'Admin accounts and delegation' },
         { name: 'roles', description: 'Roles and the permission matrix' },
         { name: 'audit', description: 'Immutable audit log' },
@@ -148,6 +150,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(userRoutes, { prefix: '/api/users' });
   await app.register(enforcementRoutes, { prefix: '/api/enforcement' });
+  await app.register(moderationRoutes, { prefix: '/api/moderation' });
   await app.register(adminRoutes, { prefix: '/api/admins' });
   await app.register(roleRoutes, { prefix: '/api/roles' });
   await app.register(auditRoutes, { prefix: '/api/audit' });

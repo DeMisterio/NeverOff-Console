@@ -29,6 +29,10 @@ const PRODUCTION_TOUCHING = new Set([
   '0007_user_directory.sql',
   // Builds indexes on the app's own tables.
   '0008_app_indexes.sql',
+  // Reads public.messages/channels metadata through the target resolver.
+  '0011_reports_and_cases.sql',
+  // Creates public-schema RPCs and grants EXECUTE to `authenticated`.
+  '0012_report_intake.sql',
 ]);
 
 /**

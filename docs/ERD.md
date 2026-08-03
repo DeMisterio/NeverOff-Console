@@ -127,6 +127,82 @@ erDiagram
     }
 ```
 
+## Reports and cases (§6.1–6.4)
+
+```mermaid
+erDiagram
+    profiles ||--o{ reports : filed
+    profiles ||--o{ reporter_reputation : has
+    reports }o--|| cases : "clustered into"
+    reports ||--o{ evidence_snapshots : captured
+    cases ||--o{ evidence_snapshots : holds
+    cases ||--o{ case_decisions : decided
+    case_decisions ||--o| enforcement_actions : produced
+    cases }o--o| profiles : "reported account"
+    admin_users ||--o{ case_decisions : made
+    admin_users ||--o{ cases : "locked / assigned"
+
+    reports {
+        uuid id PK
+        uuid reporter_id FK "anonymous to the reported party"
+        text target_type "message|user|channel|channel_post|media|bot|call"
+        text target_id
+        text reason_code FK
+        text outcome_preference
+        uuid case_id FK
+        timestamptz outcome_notified_at "reporter feedback loop"
+    }
+
+    cases {
+        uuid id PK
+        text case_ref UK
+        text target_type "UNIQUE with target_id while open"
+        text target_id
+        text primary_category "most severe present, not most frequent"
+        numeric priority_score
+        int report_count
+        int distinct_reporter_count
+        bool coordinated_suspected "lowers priority, never actions"
+        jsonb coordination_signals
+        uuid locked_by FK "expires on its own"
+        timestamptz first_touched_at "set once, for the KPI"
+    }
+
+    evidence_snapshots {
+        uuid id PK
+        text source "reporter_submitted | server_captured"
+        text content_text "NULL for a metadata-only report"
+        jsonb context_text "only with reporter consent"
+        text media_perceptual_hash "links the same image across cases"
+        bool requires_blur "graphic categories, §6.8"
+    }
+
+    reporter_reputation {
+        uuid user_id PK
+        int reports_actioned
+        int reports_dismissed
+        numeric accuracy "weights triage, never auto-dismisses"
+        timestamptz rate_limited_until
+    }
+
+    case_decisions {
+        uuid id PK
+        text outcome "action_taken|no_violation|duplicate|..."
+        uuid enforcement_action_id FK "null when no action was warranted"
+        bool requires_second_review "four-eyes on permanent bans"
+        text reporter_message
+    }
+```
+
+Two things this diagram encodes that are easy to miss:
+
+- **`evidence_snapshots.source`** is the E2EE boundary made concrete. `server_captured` is only
+  possible for data the server can actually read. A constraint rejects any attempt to claim the
+  server captured message content.
+- **`cases` has a partial unique index** on `(target_type, target_id)` restricted to non-closed
+  statuses. That is what makes five reports become one case — and what lets a *new* case open
+  later, so repeat offending reads as several cases over time rather than one that never closes.
+
 ## NeverOff schema (`public`) — owned by the app
 
 The console reads these and adds **only** functions and `RESTRICTIVE` RLS policies. No columns are
