@@ -314,6 +314,7 @@ over-granting surfaces as an incident.
 
 ## Documentation
 
+- [Deploying to Oracle Cloud](docs/DEPLOY-ORACLE.md) — start to finish, with TLS and systemd
 - [Permission matrix](docs/PERMISSION_MATRIX.md) — role × permission grid
 - [Database ERD](docs/ERD.md)
 - [Operations runbook](docs/RUNBOOK.md) — how to handle each escalation type

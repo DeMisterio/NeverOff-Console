@@ -10,6 +10,7 @@
     "start": "node dist/index.js",
     "worker": "tsx --env-file-if-exists=../../.env src/workers/index.ts",
     "seed": "tsx --env-file-if-exists=../../.env src/seed.ts",
+    "bootstrap:admin": "tsx --env-file-if-exists=../../.env src/bootstrap-admin.ts",
     "openapi": "tsx --env-file-if-exists=../../.env src/openapi-emit.ts",
     "test": "vitest run",
     "test:watch": "vitest"
