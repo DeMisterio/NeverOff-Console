@@ -136,21 +136,14 @@ of that rule varies between images. Find it rather than assuming:
 sudo iptables -L INPUT --line-numbers -n
 ```
 
-Insert both ports above that line number, substituting it for `N`:
+This reads that line number, inserts both ports above it, saves, and prints the
+result — no manual substitution to get wrong:
 
 ```bash
-sudo iptables -I INPUT N -m state --state NEW -p tcp --dport 80 -j ACCEPT && sudo iptables -I INPUT N -m state --state NEW -p tcp --dport 443 -j ACCEPT
+N=$(sudo iptables -L INPUT --line-numbers -n | awk '/REJECT/{print $1; exit}'); N=${N:-1}; echo "Inserting above REJECT at line $N"; sudo iptables -I INPUT $N -m state --state NEW -p tcp --dport 80 -j ACCEPT && sudo iptables -I INPUT $N -m state --state NEW -p tcp --dport 443 -j ACCEPT && sudo netfilter-persistent save && sudo iptables -L INPUT --line-numbers -n
 ```
 
-Confirm they landed above the REJECT, then persist them:
-
-```bash
-sudo iptables -L INPUT --line-numbers -n
-```
-
-```bash
-sudo netfilter-persistent save
-```
+In the final listing, both ACCEPT lines must appear **above** the REJECT.
 
 Order is the whole point here. Rules below the REJECT are still listed, still
 look correct at a glance, and do nothing at all.
