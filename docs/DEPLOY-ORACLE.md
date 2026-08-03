@@ -39,7 +39,7 @@ splitting them across hostnames breaks sign-in.
 | | |
 |---|---|
 | Shape | `VM.Standard.A1.Flex`, **4 OCPU / 24 GB** |
-| Image | **Canonical Ubuntu 24.04 LTS (aarch64)** |
+| Image | **Canonical Ubuntu 24.04 (aarch64)** — `Minimal` is fine, see below |
 | Boot volume | 50 GB (the default) |
 
 That is the whole Always Free Ampere allocation on one instance, at no cost.
@@ -68,6 +68,33 @@ rebuilding.
 Your home region is fixed at signup and cannot be changed afterwards. In the
 creation dialog, confirm a **public IPv4** is assigned and **save the SSH
 private key** — Oracle shows it once.
+
+**"Minimal" is often the only aarch64 Ubuntu offered, and that is fine.** It is
+the same Ubuntu with a smaller preinstalled package set — same kernel, same apt
+repositories, same support window. It simply omits tools a server does not need
+by default. Step 0 below installs the handful this guide does use, so the rest
+proceeds identically.
+
+---
+
+## 0. Packages this guide needs
+
+Do this first — step 1 uses `netfilter-persistent`, which a Minimal image does
+not necessarily have, and finding that out mid-firewall-edit is unpleasant.
+
+```bash
+sudo apt update && sudo DEBIAN_FRONTEND=noninteractive apt install -y git curl gnupg ca-certificates dnsutils iptables-persistent
+```
+
+`DEBIAN_FRONTEND=noninteractive` matters: `iptables-persistent` otherwise opens
+a dialog asking whether to save the current rules, and a prompt nobody is
+watching will just hang. Installing it now, before you touch anything, means the
+"save current rules" answer is irrelevant either way.
+
+What each is for: `gnupg` dearmors the Caddy signing key, `dnsutils` provides
+`dig` for the DNS check, `iptables-persistent` brings `netfilter-persistent` so
+firewall rules survive a reboot. On a full image most are already present and
+this is a no-op.
 
 ---
 
@@ -126,11 +153,11 @@ dig +short console.yourdomain.com
 ## 3. Install Node and Caddy
 
 ```bash
-sudo apt update && sudo apt install -y git curl
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
 ```
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+node --version && npm --version
 ```
 
 ```bash
