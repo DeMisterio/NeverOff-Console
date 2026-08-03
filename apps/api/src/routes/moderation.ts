@@ -9,6 +9,8 @@ import { conflict, forbidden, notFound } from '../errors.js';
 import { actorOf } from '../plugins/auth.js';
 import { assertInScope, requirePermission } from '../rbac.js';
 import { ApplyActionBody } from './enforcement.js';
+import { ChannelActionBody } from './channels.js';
+import { applyChannelAction, loadChannelTarget } from '../services/channels.js';
 import { applyEnforcement, loadEnforcementTarget } from '../services/enforcement.js';
 
 /**
@@ -548,14 +550,22 @@ export default async function moderationRoutes(fastify: FastifyInstance): Promis
           ]),
           note: z.string().trim().min(10).max(2000),
           reporterMessage: z.string().max(500).optional(),
-          // Omit to close the case with no enforcement.
+          // Omit both to close the case with no action.
+          //
+          // These are separate because a channel case usually needs both and
+          // sometimes needs only one. Banning the owner of a 24,000-subscriber
+          // channel does not take the channel down, and freezing a channel does
+          // not stop its owner opening another — §6.5's owner accountability
+          // exists precisely because those are different levers.
           enforcement: ApplyActionBody.optional(),
+          channelAction: ChannelActionBody.optional(),
         }),
         response: {
           200: z.object({
             caseId: z.string(),
             outcome: z.string(),
             enforcementActionId: z.string().nullable(),
+            channelActionId: z.string().nullable(),
             reportersNotified: z.number(),
           }),
         },
@@ -597,14 +607,15 @@ export default async function moderationRoutes(fastify: FastifyInstance): Promis
           );
         }
 
-        // --- Enforcement, if the decision carries any --------------------
+        // --- Action, if the decision carries any --------------------------
         let actionId: string | null = null;
+        let channelActionId: string | null = null;
+
+        if ((body.enforcement || body.channelAction) && body.outcome !== 'action_taken') {
+          throw conflict('A decision that applies an action must be recorded as "action taken".');
+        }
+
         if (body.enforcement) {
-          if (body.outcome !== 'action_taken') {
-            throw conflict(
-              'A decision that applies enforcement must be recorded as "action taken".',
-            );
-          }
           if (!kase.target_owner_id) {
             throw conflict(
               'This case has no resolvable account to action. Escalate it instead.',
@@ -621,6 +632,36 @@ export default async function moderationRoutes(fastify: FastifyInstance): Promis
           actionId = applied.id;
         }
 
+        if (body.channelAction) {
+          // Resolve the channel: for a post report the case target is the post,
+          // and the thing to restrict is the channel it sits in.
+          let channelId: string | null = null;
+          if (kase.target_type === 'channel') {
+            channelId = kase.target_id;
+          } else if (kase.target_type === 'channel_post') {
+            const post = await client.query<{ channel_id: string }>(
+              `SELECT channel_id FROM public.channel_posts WHERE id = $1`,
+              [kase.target_id],
+            );
+            channelId = post.rows[0]?.channel_id ?? null;
+          }
+
+          if (!channelId) {
+            throw conflict(
+              'This case is not about a channel, so a channel action does not apply to it.',
+            );
+          }
+
+          const channel = await loadChannelTarget(client, channelId);
+          if (!channel) throw notFound('Channel');
+
+          const applied = await applyChannelAction(client, actor, channel, {
+            ...body.channelAction,
+            caseId: kase.id,
+          });
+          channelActionId = applied.id;
+        }
+
         // --- Record the decision ------------------------------------------
         await client.query(
           `INSERT INTO admin.case_decisions
@@ -632,12 +673,17 @@ export default async function moderationRoutes(fastify: FastifyInstance): Promis
             actor.id,
             `${actor.displayName} <${actor.email}>`,
             body.outcome,
-            body.enforcement?.reasonCode ?? kase.primary_reason_code,
+            body.enforcement?.reasonCode ??
+              body.channelAction?.reasonCode ??
+              kase.primary_reason_code,
             body.note,
             actionId,
             body.reporterMessage ?? null,
-            // §6.4 four-eyes on precedent-setting outcomes.
-            body.enforcement?.type === 'ban_permanent',
+            // §6.4 four-eyes on precedent-setting outcomes. A channel takedown
+            // qualifies for the same reason a permanent ban does: it is
+            // terminal and it is visible to everyone who subscribed.
+            body.enforcement?.type === 'ban_permanent' ||
+              body.channelAction?.type === 'takedown',
           ],
         );
 
@@ -693,6 +739,7 @@ export default async function moderationRoutes(fastify: FastifyInstance): Promis
           after: {
             outcome: body.outcome,
             enforcementActionId: actionId,
+            channelActionId,
             reportCount: kase.report_count,
           },
         });
@@ -705,6 +752,7 @@ export default async function moderationRoutes(fastify: FastifyInstance): Promis
           caseId: kase.id,
           outcome: body.outcome,
           enforcementActionId: actionId,
+          channelActionId,
           reportersNotified: notified.rowCount ?? 0,
         };
       });

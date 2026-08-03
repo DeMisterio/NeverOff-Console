@@ -8,6 +8,8 @@ import { AdminsPage } from './pages/Admins';
 import { AppealsPage } from './pages/Appeals';
 import { AuditPage } from './pages/Audit';
 import { CaseDetailPage } from './pages/CaseDetail';
+import { ChannelDetailPage } from './pages/ChannelDetail';
+import { ChannelsPage } from './pages/Channels';
 import { LoginPage } from './pages/Login';
 import { QueuePage } from './pages/Queue';
 import { UserDetailPage } from './pages/UserDetail';
@@ -32,6 +34,7 @@ const NAV: NavEntry[] = [
   // Queue first: it is where a moderator spends their shift.
   { to: '/queue', label: 'Queue', permission: 'reports.view' },
   { to: '/users', label: 'Users', permission: 'users.view' },
+  { to: '/channels', label: 'Channels', permission: 'channels.view' },
   { to: '/appeals', label: 'Appeals', permission: 'reports.view' },
   { to: '/audit', label: 'Audit log', permission: 'audit.view' },
   { to: '/admins', label: 'Admins', permission: 'users.view' },
@@ -175,6 +178,26 @@ export function App() {
           <RequireAuth>
             <Guarded permission="users.view">
               <UserDetailPage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/channels"
+        element={
+          <RequireAuth>
+            <Guarded permission="channels.view">
+              <ChannelsPage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/channels/:id"
+        element={
+          <RequireAuth>
+            <Guarded permission="channels.view">
+              <ChannelDetailPage />
             </Guarded>
           </RequireAuth>
         }

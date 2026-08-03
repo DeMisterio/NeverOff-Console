@@ -1,6 +1,11 @@
 import { closePool, getPool } from '@neveroff-console/db';
 
 import { getConfig } from '../config.js';
+import {
+  captureChannelGrowth,
+  detectChannelAnomalies,
+  processExpiredChannelActions,
+} from './channels.js';
 import { deliverNotifications } from './notifications.js';
 import { purgeExpiredData } from './retention.js';
 import { escalateAppeals, processExpiredEnforcements } from './enforcement-expiry.js';
@@ -41,9 +46,26 @@ const JOBS: Job[] = [
     run: escalateAppeals,
   },
   {
+    name: 'channel-restriction-expiry',
+    intervalMs: 60_000,
+    run: processExpiredChannelActions,
+  },
+  {
     name: 'notification-delivery',
     intervalMs: 15_000,
     run: deliverNotifications,
+  },
+  {
+    name: 'channel-growth-snapshot',
+    // Hourly. The anomaly check compares a day against a fortnight, so
+    // sampling more often buys nothing but rows.
+    intervalMs: 3_600_000,
+    run: captureChannelGrowth,
+  },
+  {
+    name: 'channel-anomaly-detection',
+    intervalMs: 3_600_000,
+    run: detectChannelAnomalies,
   },
   {
     name: 'retention-purge',
