@@ -120,10 +120,51 @@ export async function bootstrap(): Promise<void> {
   }
 
   // --- 2. NeverOff app schema --------------------------------------------
+  //
+  // Applied in two passes, because the app's migrations are not in dependency
+  // order: 02_versions_checksum.sql does ALTER TABLE versions, but `versions`
+  // is only created in 06_missing_backend_setup.sql. Its own comment calls the
+  // table "untracked-elsewhere" — it was made by hand in the Supabase dashboard
+  // and retrofitted into a migration later.
+  //
+  // A fresh project therefore cannot be provisioned by running these in
+  // filename order. Rather than hardcode a working sequence here, which would
+  // hide the problem and rot the moment a migration is added, the first pass
+  // collects failures and the second retries them once everything else exists.
+  // Anything still failing after that is a genuine error and is raised.
   const appDir = findNeverOffMigrations();
   console.log(`\n  NeverOff app schema (from ${appDir}):`);
-  for (const file of readdirSync(appDir).filter((f) => f.endsWith('.sql')).sort()) {
-    await applyOnce(`neveroff/${file}`, readFileSync(join(appDir, file), 'utf8'));
+
+  const appFiles = readdirSync(appDir).filter((f) => f.endsWith('.sql')).sort();
+  const deferred: Array<{ file: string; error: string }> = [];
+
+  for (const file of appFiles) {
+    try {
+      await applyOnce(`neveroff/${file}`, readFileSync(join(appDir, file), 'utf8'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(`  [ deferred] ${file} — depends on something not yet created`);
+      deferred.push({ file, error: message });
+    }
+  }
+
+  if (deferred.length > 0) {
+    console.log(`\n  Retrying ${deferred.length} deferred migration(s):`);
+    for (const { file, error } of deferred) {
+      try {
+        await applyOnce(`neveroff/${file}`, readFileSync(join(appDir, file), 'utf8'));
+      } catch {
+        throw new Error(
+          `${file} failed on both passes, so this is a real dependency problem rather than ` +
+            `ordering:\n  ${error}`,
+        );
+      }
+    }
+    console.log(
+      '\n  NOTE: those migrations only applied on a second pass. The app repository ' +
+        'cannot provision a fresh Supabase project by running its migrations in filename ' +
+        'order — worth fixing there, not here.',
+    );
   }
 
   // --- 3. Sanity check ----------------------------------------------------

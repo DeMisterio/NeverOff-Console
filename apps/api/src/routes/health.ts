@@ -33,8 +33,22 @@ export default async function healthRoutes(fastify: FastifyInstance): Promise<vo
       schema: {
         tags: ['auth'],
         summary: 'Readiness probe with per-dependency status',
+        // 503 is declared as well as 200 — a readiness probe that can only
+        // describe success is not a readiness probe, and the type provider
+        // narrows reply.status() to whatever the schema lists.
         response: {
           200: z.object({
+            status: z.enum(['ok', 'degraded']),
+            checks: z.array(
+              z.object({
+                name: z.string(),
+                ok: z.boolean(),
+                critical: z.boolean(),
+                detail: z.string().optional(),
+              }),
+            ),
+          }),
+          503: z.object({
             status: z.enum(['ok', 'degraded']),
             checks: z.array(
               z.object({

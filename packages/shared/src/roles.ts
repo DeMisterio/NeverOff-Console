@@ -464,6 +464,27 @@ export function canDelegate(
     };
   }
 
+  // Reserved atoms must be rejected explicitly, before the check below.
+  //
+  // resolvePermissions() strips Super-Admin-only atoms as a fail-closed
+  // backstop, which means a request naming one never reaches the
+  // `permission_not_held` loop — the guard would return ok, the atom would be
+  // quietly dropped, and the caller would be told the grant succeeded. Worse,
+  // assertCanDelegate would raise no escalation alert, so an admin probing for
+  // reserved permissions would leave no trace.
+  //
+  // The effective grant was always safe. The reporting was not.
+  for (const permission of target.extraPermissions ?? []) {
+    if ((SUPER_ADMIN_ONLY as readonly string[]).includes(permission)) {
+      return {
+        ok: false,
+        code: 'reserved_permission',
+        message: `"${permission}" is reserved to the Super Admin and cannot be granted to anyone.`,
+        details: { permission },
+      };
+    }
+  }
+
   // Every atom the target would hold must be held by the actor.
   const wouldHold = resolvePermissions({
     id: target.id ?? '',

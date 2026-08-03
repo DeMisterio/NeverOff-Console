@@ -55,7 +55,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     // audit log both record the wrong address.
     trustProxy: true,
     bodyLimit: 1_048_576,
-    disableRequestLogging: false,
+    // `disableRequestLogging: false` was set explicitly and is deprecated in
+    // Fastify 5 — request logging is on by default, so saying so was noise that
+    // printed a warning on every boot.
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
@@ -196,9 +198,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Postgres raise_exception from a guard trigger — surface the message,
     // since those are written to be read by an admin.
     const pgCode = (error as { code?: string }).code;
+    // `error` is `unknown` here: anything thrown reaches this handler, not just
+    // Error instances, and reading .message off a thrown string would be
+    // undefined at exactly the moment someone needs the detail.
+    const rawMessage = error instanceof Error ? error.message : String(error);
+
     if (pgCode === 'P0001') {
       return reply.status(409).send({
-        error: { code: 'conflict', message: error.message },
+        error: { code: 'conflict', message: rawMessage },
       });
     }
     if (pgCode === '23505') {
@@ -213,7 +220,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         code: 'internal',
         message: config.isProduction
           ? 'Something went wrong. The incident has been logged.'
-          : error.message,
+          : rawMessage,
       },
     });
   });

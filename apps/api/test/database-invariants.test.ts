@@ -16,25 +16,48 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * when one is not reachable, so `npm test` still works on a fresh checkout.
  */
 
-const pool = getPool();
+/**
+ * Assigned in beforeAll, not at module scope.
+ *
+ * `getPool()` throws when DATABASE_URL is unset, and calling it during
+ * collection killed the whole suite before `beforeAll` could skip. A Proxy was
+ * the wrong fix: pg's Pool.query mutates `this` for its internal bookkeeping,
+ * and those writes hit the proxy's default set trap — landing on the dummy
+ * target rather than the real pool. The accounting corrupted, clients were
+ * never returned, and the pool deadlocked after a handful of tests.
+ *
+ * Every helper below runs inside a test or hook, so a plain lazy binding is
+ * both sufficient and honest.
+ */
+let pool!: ReturnType<typeof getPool>;
 let dbAvailable = false;
 
 /** Unique per run so repeated runs do not collide on usernames. */
 const tag = randomUUID().slice(0, 8);
 const userIds: string[] = [];
+
+/**
+ * Incremented synchronously on entry to createUser.
+ *
+ * Deriving the email from userIds.length raced: several createUser calls in a
+ * Promise.all all read the same length before any of them had pushed, so they
+ * generated identical addresses and collided on auth.users' unique index.
+ */
+let userSeq = 0;
 let adminA = '';
 let adminB = '';
 
 async function createUser(consentAnalytics: boolean): Promise<string> {
   const id = randomUUID();
+  const seq = userSeq++;
   await pool.query(`INSERT INTO auth.users (id, email) VALUES ($1, $2)`, [
     id,
-    `test-${tag}-${userIds.length}@example.test`,
+    `test-${tag}-${seq}@example.test`,
   ]);
   await pool.query(
     `INSERT INTO public.profiles (id, username, display_name, public_key)
      VALUES ($1, $2, $3, 'test-key')`,
-    [id, `test_${tag}_${userIds.length}`, 'Test User'],
+    [id, `test_${tag}_${seq}`, 'Test User'],
   );
   await pool.query(
     `INSERT INTO admin.consent_records
@@ -61,6 +84,11 @@ async function createAdmin(email: string): Promise<string> {
 
 beforeAll(async () => {
   try {
+    if (!process.env.DATABASE_URL) {
+      dbAvailable = false;
+      return;
+    }
+    pool = getPool();
     await pool.query('SELECT 1');
     const { rows } = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM admin.schema_migrations`,
@@ -77,6 +105,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!pool) return;
   if (dbAvailable) {
     // profiles cascade to enforcement actions, appeals, consent and telemetry.
     await pool.query(`DELETE FROM public.profiles WHERE id = ANY($1::uuid[])`, [userIds]);
@@ -297,6 +326,32 @@ describe('enforcement state', () => {
     ).rejects.toThrow();
   });
 
+  maybe('lets an account with enforcement history be erased (§8, §11)', async () => {
+    const user = await createUser(true);
+
+    await pool.query(
+      `INSERT INTO admin.enforcement_actions
+         (user_id, type, reason_code, note, issued_by_label, expires_at)
+       VALUES ($1, 'ban_temporary', 'spam.phishing',
+               'Active ban, so the projection row exists at delete time.',
+               'test', NOW() + INTERVAL '7 days')`,
+      [user],
+    );
+
+    // The projection trigger used to re-insert a row for the profile being
+    // deleted, and the FK rejected it — so erasure failed for exactly the
+    // accounts anyone would want to erase. Found by teardown, not by a test.
+    await expect(
+      pool.query(`DELETE FROM public.profiles WHERE id = $1`, [user]),
+    ).resolves.toBeDefined();
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM admin.user_restriction_state WHERE user_id = $1`,
+      [user],
+    );
+    expect(Number(rows[0]!.count)).toBe(0);
+  });
+
   maybe('keeps the projection in step with the actions', async () => {
     const user = await createUser(true);
 
@@ -345,13 +400,27 @@ describe('legal holds block erasure (§8)', () => {
 });
 
 describe('enforcement policies are attached to the app tables (§11)', () => {
-  maybe('has four restrictive enforcement policies in public', async () => {
+  maybe('attaches every enforcement policy as RESTRICTIVE', async () => {
     const { rows } = await pool.query<{ policyname: string; permissive: string }>(
       `SELECT policyname, permissive FROM pg_policies
-        WHERE schemaname = 'public' AND policyname LIKE 'Enforcement:%'`,
+        WHERE schemaname = 'public' AND policyname LIKE 'Enforcement:%'
+        ORDER BY policyname`,
     );
 
-    expect(rows).toHaveLength(4);
+    // Named rather than counted: a count says nothing about which guarantee
+    // went missing, and it goes stale every time a migration adds one — as it
+    // did when 0013 brought the two channel policies.
+    expect(rows.map((r) => r.policyname)).toEqual([
+      'Enforcement: blocked users cannot post to channels',
+      'Enforcement: blocked users cannot send messages',
+      'Enforcement: blocked users cannot subscribe',
+      'Enforcement: frozen channels cannot receive posts',
+      'Enforcement: restricted channels cannot gain subscribers',
+      'Enforcement: restricted users cannot create channels',
+    ]);
+
+    // PERMISSIVE would silently widen access instead of narrowing it — the
+    // policies would be OR-ed with the app's own rather than AND-ed.
     for (const row of rows) {
       expect(row.permissive, `${row.policyname} must be RESTRICTIVE`).toBe('RESTRICTIVE');
     }
@@ -394,13 +463,25 @@ async function report(
   reasonCode: string,
   evidence: string | null = null,
 ): Promise<Record<string, unknown>> {
-  await pool.query(`SELECT set_config('app.current_user_id', $1, false)`, [reporterId]);
-  const { rows } = await pool.query<{ result: Record<string, unknown> }>(
-    `SELECT public.submit_report($1, $2, $3, NULL, 'just_report', $4, NULL, FALSE, NULL) AS result`,
-    [targetType, targetId, reasonCode, evidence],
-  );
-  await pool.query(`SELECT set_config('app.current_user_id', '', false)`);
-  return rows[0]!.result;
+  // A dedicated client, not pool.query.
+  //
+  // set_config(..., false) sets the value for the *session*, and consecutive
+  // pool.query() calls are not guaranteed to land on the same connection — so
+  // the impersonation could be applied to one client while submit_report ran on
+  // another, where auth.uid() is null. It happened to work whenever the pool
+  // handed back the same idle client, which is the worst kind of bug.
+  const client = await pool.connect();
+  try {
+    await client.query(`SELECT set_config('app.current_user_id', $1, false)`, [reporterId]);
+    const { rows } = await client.query<{ result: Record<string, unknown> }>(
+      `SELECT public.submit_report($1, $2, $3, NULL, 'just_report', $4, NULL, FALSE, NULL) AS result`,
+      [targetType, targetId, reasonCode, evidence],
+    );
+    return rows[0]!.result;
+  } finally {
+    await client.query(`SELECT set_config('app.current_user_id', '', false)`).catch(() => {});
+    client.release();
+  }
 }
 
 describe('report clustering (§6.3, §11)', () => {
@@ -533,13 +614,13 @@ describe('report routing (§6.2, §6.7)', () => {
     const result = await report(reporter, 'user', atRisk, 'self_harm.risk_disclosure');
     expect(result.routing).toBe('safety_escalation');
 
-    const { rows } = await pool.query<{ escalated_at: Date | null; note: string | null }>(
+    const { rows } = await pool.query<{ escalated_at: Date | null; escalation_note: string | null }>(
       `SELECT escalated_at, escalation_note FROM admin.cases
         WHERE target_type = 'user' AND target_id = $1`,
       [atRisk],
     );
     expect(rows[0]!.escalated_at).not.toBeNull();
-    expect(rows[0]!.note).toMatch(/not enforcement/i);
+    expect(rows[0]!.escalation_note).toMatch(/not enforcement/i);
   });
 
   maybe('refuses enforcement citing a self-harm reason, at the database level', async () => {

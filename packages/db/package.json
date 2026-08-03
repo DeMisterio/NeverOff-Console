@@ -18,7 +18,7 @@
     "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts up",
     "migrate:status": "tsx --env-file-if-exists=../../.env src/migrate.ts status",
     "reset": "tsx --env-file-if-exists=../../.env src/reset.ts",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@neveroff-console/shared": "*",

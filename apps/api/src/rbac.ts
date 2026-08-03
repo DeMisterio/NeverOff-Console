@@ -127,7 +127,12 @@ export async function assertCanDelegate(
 
   // A blocked escalation is a security event, not a validation error. Record it
   // even though the request failed — especially because the request failed.
-  if (verdict.code === 'permission_not_held' || verdict.code === 'scope_not_contained') {
+  if (
+    verdict.code === 'permission_not_held' ||
+    verdict.code === 'scope_not_contained' ||
+    // Asking for a Super-Admin-only atom is the clearest probe of all.
+    verdict.code === 'reserved_permission'
+  ) {
     await raiseAlert(client, {
       kind: 'privilege_escalation_attempt',
       severity: 'high',

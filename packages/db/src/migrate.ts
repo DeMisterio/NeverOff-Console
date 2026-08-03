@@ -50,11 +50,100 @@ const PRODUCTION_TOUCHING = new Set([
  */
 const NO_TRANSACTION_MARKER = '@no-transaction';
 
+/**
+ * admin.reason_catalogue is *derived* data — synced from packages/shared, not
+ * written by a migration. It is created in 0006 and populated by the sync that
+ * normally runs once at the end.
+ *
+ * Later migrations insert rows with a foreign key to it (0018's starter automod
+ * rules), so the sync has to happen the moment the table exists rather than
+ * after everything. Naming the migration explicitly keeps the dependency
+ * visible; inferring it would quietly stop working the day the table moves.
+ */
+const SYNC_CATALOGUE_AFTER = '0006_neveroff_integration.sql';
+
 interface Migration {
   readonly name: string;
   readonly sql: string;
   readonly checksum: string;
   readonly transactional: boolean;
+}
+
+/**
+ * Split SQL into individual statements.
+ *
+ * Needed only for `@no-transaction` migrations. Sending several statements in
+ * one query string makes Postgres wrap them in an *implicit* transaction, which
+ * is why CREATE INDEX CONCURRENTLY failed even with no explicit BEGIN — the
+ * marker suppressed our BEGIN but not Postgres's own.
+ *
+ * Handles dollar-quoting, single quotes and both comment forms, because this is
+ * shared code and the next non-transactional migration may well contain a
+ * function body with semicolons in it.
+ */
+export function splitStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let i = 0;
+
+  while (i < sql.length) {
+    const rest = sql.slice(i);
+
+    // Line comment
+    if (rest.startsWith('--')) {
+      const end = sql.indexOf('\n', i);
+      const stop = end === -1 ? sql.length : end + 1;
+      current += sql.slice(i, stop);
+      i = stop;
+      continue;
+    }
+
+    // Block comment
+    if (rest.startsWith('/*')) {
+      const end = sql.indexOf('*/', i + 2);
+      const stop = end === -1 ? sql.length : end + 2;
+      current += sql.slice(i, stop);
+      i = stop;
+      continue;
+    }
+
+    // Single-quoted literal, honouring '' escapes
+    if (sql[i] === "'") {
+      let j = i + 1;
+      while (j < sql.length) {
+        if (sql[j] === "'" && sql[j + 1] === "'") { j += 2; continue; }
+        if (sql[j] === "'") { j += 1; break; }
+        j += 1;
+      }
+      current += sql.slice(i, j);
+      i = j;
+      continue;
+    }
+
+    // Dollar-quoted block: $$ … $$ or $tag$ … $tag$
+    const dollar = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(rest);
+    if (dollar) {
+      const tag = dollar[0];
+      const end = sql.indexOf(tag, i + tag.length);
+      const stop = end === -1 ? sql.length : end + tag.length;
+      current += sql.slice(i, stop);
+      i = stop;
+      continue;
+    }
+
+    if (sql[i] === ';') {
+      if (current.trim()) statements.push(current.trim());
+      current = '';
+      i += 1;
+      continue;
+    }
+
+    current += sql[i];
+    i += 1;
+  }
+
+  if (current.trim()) statements.push(current.trim());
+  return statements;
 }
 
 function loadMigrations(): Migration[] {
@@ -155,10 +244,19 @@ export async function migrate(): Promise<void> {
 
     const client = await pool.connect();
     try {
-      if (migration.transactional) await client.query('BEGIN');
-
-      const result = await client.query(migration.sql);
-      reportVerification(result as QueryResult | QueryResult[]);
+      if (migration.transactional) {
+        await client.query('BEGIN');
+        const result = await client.query(migration.sql);
+        reportVerification(result as QueryResult | QueryResult[]);
+      } else {
+        // One statement per round trip. Several statements in a single query
+        // string are wrapped by Postgres in an implicit transaction, which
+        // defeats the whole point of the @no-transaction marker.
+        for (const statement of splitStatements(migration.sql)) {
+          const result = await client.query(statement);
+          reportVerification(result as QueryResult | QueryResult[]);
+        }
+      }
 
       await client.query(
         `INSERT INTO admin.schema_migrations (name, checksum, duration_ms)
@@ -169,6 +267,14 @@ export async function migrate(): Promise<void> {
       if (migration.transactional) await client.query('COMMIT');
       ran += 1;
       console.log(`      applied in ${Date.now() - started}ms`);
+
+      if (migration.name === SYNC_CATALOGUE_AFTER) {
+        const early = await syncCatalogue();
+        console.log(
+          `      catalogue synced early: ${early.reasons} reason codes, so later ` +
+            'migrations can reference them',
+        );
+      }
     } catch (err) {
       if (migration.transactional) {
         await client.query('ROLLBACK').catch(() => {});

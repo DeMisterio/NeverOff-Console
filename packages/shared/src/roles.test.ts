@@ -328,7 +328,13 @@ describe('scope admission', () => {
 describe('delegation guards (§1.3)', () => {
   const superAdmin = identity('super_admin');
   const tier1 = identity('tier1_platform_manager');
-  const tier2De = identity('tier2_moderation_lead', { scope: scope({ countries: ['DE'] }) });
+  // Scoped, but still holds admins.create — Tier 2 does not, so using a Tier 2
+  // here would short-circuit on missing_permission and never reach the scope
+  // and grant checks these tests exist to exercise.
+  const tier1De = identity('tier1_platform_manager', {
+    id: 'tier1-de',
+    scope: scope({ countries: ['DE'] }),
+  });
 
   it('lets the Super Admin create a scoped Tier 3 moderator', () => {
     const verdict = canDelegate(
@@ -340,12 +346,14 @@ describe('delegation guards (§1.3)', () => {
   });
 
   it('blocks granting a permission the actor does not hold', () => {
+    // childsafety.access is the one atom Tier 1 lacks that is not reserved to
+    // the Super Admin, so it isolates the permission-not-held path cleanly.
     const verdict = canDelegate(
-      tier2De,
+      tier1De,
       {
         role: 'tier3_moderator',
         scope: scope({ countries: ['DE'] }),
-        extraPermissions: ['users.ban.permanent'],
+        extraPermissions: ['childsafety.access'],
       },
       'create',
     );
@@ -354,11 +362,28 @@ describe('delegation guards (§1.3)', () => {
 
   it('blocks widening scope beyond the actor’s own', () => {
     const verdict = canDelegate(
-      tier2De,
+      tier1De,
       { role: 'tier3_moderator', scope: GLOBAL_SCOPE },
       'create',
     );
     expect(verdict).toMatchObject({ ok: false, code: 'scope_not_contained' });
+  });
+
+  it('rejects a reserved atom outright rather than silently dropping it', () => {
+    // resolvePermissions strips Super-Admin-only atoms as a backstop, which
+    // once meant this request returned ok while the atom was quietly discarded
+    // — a success report for a grant that did not happen, and no escalation
+    // alert. Caught by the exhaustive pair sweep below.
+    const verdict = canDelegate(
+      superAdmin,
+      {
+        role: 'tier1_platform_manager',
+        scope: GLOBAL_SCOPE,
+        extraPermissions: ['analytics.export_raw'],
+      },
+      'create',
+    );
+    expect(verdict).toMatchObject({ ok: false, code: 'reserved_permission' });
   });
 
   it('blocks creating a peer of equal rank', () => {

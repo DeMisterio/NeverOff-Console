@@ -188,7 +188,9 @@ async function seedConversations(client: PoolClient, users: SeededUser[]): Promi
 }
 
 async function seedChannels(client: PoolClient, users: SeededUser[]): Promise<number> {
-  const topics = [
+  // Typed as tuples, not string[][]: under noUncheckedIndexedAccess a
+  // destructured element of the latter is `string | undefined`.
+  const topics: Array<[string, string]> = [
     ['berlin_tech', 'Berlin Tech'], ['crypto_signals', 'Crypto Signals'],
     ['football_daily', 'Football Daily'], ['art_dump', 'Art Dump'],
     ['study_group', 'Study Group'], ['deals_uk', 'UK Deals'],
@@ -322,6 +324,13 @@ async function seedEnforcement(
     const user = pick(users);
     const type = pick(['warning', 'mute', 'feature_restriction', 'rate_limit'] as const);
 
+    // One draw, not two. Deciding reversed_at and reversal_reason with separate
+    // rand() calls produced rows where the action was reversed with no
+    // documented reason — which the enforcement_reversal_documented constraint
+    // correctly refused. §3.3 requires every reversal carry a reason, and the
+    // seed has no business generating data the schema forbids.
+    const wasReversed = rand() > 0.7;
+
     await client.query(
       `INSERT INTO admin.enforcement_actions
          (user_id, type, reason_code, note, issued_by, issued_by_label, issued_at,
@@ -338,8 +347,8 @@ async function seedEnforcement(
         type === 'mute' ? daysAgo(between(20, 25)) : null,
         type === 'feature_restriction' ? ['send_media'] : null,
         type === 'rate_limit' ? 5 : null,
-        rand() > 0.7 ? daysAgo(between(1, 19)) : null,
-        rand() > 0.7 ? 'Lifted after review.' : null,
+        wasReversed ? daysAgo(between(1, 19)) : null,
+        wasReversed ? 'Lifted after review by a Moderation Lead.' : null,
       ],
     );
   }
@@ -442,16 +451,53 @@ async function seedReports(
     ]);
   }
 
-  // --- A brigading case: many brand-new accounts, all at once, on one user.
-  // detect_coordination should flag it and priority should be pulled down.
-  const brigadeTarget = users.find((u) => u.id !== target.owner_id)!;
-  const freshAccounts = [...users]
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    .filter((u) => u.id !== brigadeTarget.id)
-    .slice(0, 6);
+  // Spread those five across two days.
+  //
+  // submit_report stamps NOW(), so seeding compresses everything into one
+  // second — which makes every case look like a burst and had the coordination
+  // detector flagging this perfectly ordinary set of reports as brigading.
+  // Backdating makes the seeded data resemble the thing it is standing in for.
+  await client.query(
+    `UPDATE admin.reports SET submitted_at = NOW() - (random() * INTERVAL '48 hours')
+      WHERE target_type = 'channel' AND target_id = $1`,
+    [target.id],
+  );
+  await client.query(
+    `SELECT admin.refresh_case(id) FROM admin.cases
+      WHERE target_type = 'channel' AND target_id = $1`,
+    [target.id],
+  );
 
-  for (const reporter of freshAccounts) {
-    await asUser(reporter.id, RPC, [
+  // --- A brigading case: genuinely new accounts, all at once, on one user.
+  //
+  // Created here rather than picked from the general population, because the
+  // seeded users are 1–900 days old and the signal that matters is accounts
+  // registered in the last week. Picking "the newest existing users" produced a
+  // brigade the detector correctly declined to flag, which made the seed claim
+  // something it had not actually demonstrated.
+  const brigadeTarget = pick(users.filter((u) => u.id !== target.owner_id));
+  const brigade: string[] = [];
+
+  for (let i = 0; i < 6; i += 1) {
+    const id = randomUUID();
+    const username = `throwaway_${i}_${String(rand()).slice(2, 8)}`;
+    // Hours old, not days.
+    const createdAt = new Date(Date.now() - between(2, 40) * 3_600_000);
+
+    await client.query(
+      `INSERT INTO auth.users (id, email, created_at) VALUES ($1, $2, $3)`,
+      [id, `${username}@example.test`, createdAt],
+    );
+    await client.query(
+      `INSERT INTO public.profiles (id, username, display_name, public_key, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [id, username, `Throwaway ${i + 1}`, randomBytes(91).toString('base64'), createdAt],
+    );
+    brigade.push(id);
+  }
+
+  for (const reporterId of brigade) {
+    await asUser(reporterId, RPC, [
       'user',
       brigadeTarget.id,
       'harassment.targeted_abuse',
@@ -506,7 +552,7 @@ async function seedReports(
   await client.query(`SELECT set_config('app.current_user_id', '', true)`);
 
   return {
-    reports,
+    reports: reports + brigade.length,
     clusteredChannel: target.name,
     brigadedUser: brigadeTarget.username,
   };
@@ -568,6 +614,18 @@ async function main(): Promise<void> {
 
     console.log('  reports and cases...');
     const reports = await seedReports(client, users);
+
+    // §11: "Every analytics chart renders from real seeded data." The charts
+    // read rollups, not raw events, so without this every dashboard is empty
+    // and every feature reads as dead — including the eleven that are used.
+    //
+    // The lookback is far wider than the worker's 48-hour default because the
+    // seed backdates history across roughly a year, and the worker's window is
+    // sized for catching up after a short outage rather than for a backfill.
+    console.log('  analytics rollups...');
+    await client.query(`SELECT admin.refresh_event_rollups($1)`, [24 * 120]);
+    await client.query(`SELECT admin.refresh_message_rollups($1)`, [24 * 400]);
+    await client.query(`SELECT admin.refresh_user_rollups($1)`, [400]);
 
     return { users, messages, channels, events, admins, enforcement, reports };
   });

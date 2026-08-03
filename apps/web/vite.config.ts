@@ -1,6 +1,15 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
+/**
+ * Vite is pinned to 5.x to match the version vitest pulls in.
+ *
+ * With two Vite majors in the tree, npm hoists the one vitest needs and
+ * @vitejs/plugin-react resolves its `Plugin` type against that, while this
+ * package resolved against its own newer copy — so `react()` returned a
+ * structurally incompatible Plugin and `defineConfig` had no matching overload.
+ * Bump this and vitest together, never one alone.
+ */
 export default defineConfig({
   plugins: [react()],
   server: {
