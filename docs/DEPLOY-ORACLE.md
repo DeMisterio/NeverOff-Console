@@ -115,6 +115,14 @@ sudo mkdir -p /opt/neveroff-console && sudo chown $USER:$USER /opt/neveroff-cons
 git clone <your-console-repo-url> /opt/neveroff-console
 ```
 
+Check what you actually got — `main` is the initial import unless you have
+merged the work into it, and a clone that builds but has no console in it is a
+confusing way to spend twenty minutes:
+
+```bash
+cd /opt/neveroff-console && git log --oneline -3 && ls apps/web/src/pages
+```
+
 ```bash
 cd /opt/neveroff-console && npm install --no-audit --no-fund
 ```
@@ -248,9 +256,16 @@ already exist:
 cd /opt/neveroff-console && npm run bootstrap:admin --workspace @neveroff-console/api -- --email you@yourdomain.com --name "Your Name"
 ```
 
-It prints a one-time password and a TOTP secret. **Add the secret to your
-authenticator before closing the terminal** — it is not stored anywhere
-retrievable. It refuses to run if a Super Admin already exists.
+It prints a one-time password, a TOTP secret, and ten recovery codes. **Add the
+secret to your authenticator and save the recovery codes before closing the
+terminal** — none of it is stored anywhere retrievable.
+
+The recovery codes matter more here than anywhere else in the system. Resetting
+an admin's second factor requires an admin, and this is the only one, so a lost
+phone without them means hand-editing production SQL. Store them somewhere that
+is not the machine you sign in from.
+
+It refuses to run if a Super Admin already exists.
 
 Then clear it from your shell history:
 
