@@ -173,7 +173,20 @@ The free path that works today, in about two minutes:
 
 1. Go to [duckdns.org](https://duckdns.org) and sign in with an existing account.
 2. Claim a subdomain, e.g. `neveroff-console` → `neveroff-console.duckdns.org`.
-3. Set its IP to your instance's public IP.
+3. Set its IP to your instance's **public IPv4**.
+
+   Overwrite whatever DuckDNS pre-fills — it detects the address of the browser
+   you are sitting at, which is your own machine, not the server. Take the value
+   from the OCI console (Compute → Instances → your instance → Public IP
+   address), or ask the instance itself:
+
+   ```bash
+   curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/ | grep -o '"publicIp"[^,]*'
+   ```
+
+   That address is *ephemeral* by default, meaning it lasts the lifetime of the
+   instance — reboots keep it, terminating the instance releases it. Convert it
+   to a reserved public IP if you want it to survive a rebuild.
 
 Then use that hostname everywhere this guide says `console.yourdomain.com` — in
 `WEB_ORIGIN`, in the Caddyfile, and in the `dig` check. Everything else is
