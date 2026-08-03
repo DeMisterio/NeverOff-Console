@@ -128,25 +128,32 @@ be the API with no TLS and no reverse proxy in front of it.
 **b) The instance's own iptables**
 
 Oracle's Ubuntu images ship with a `REJECT` rule that drops everything not
-explicitly allowed, and it sits *above* anything you append. Insert before it:
+explicitly allowed, and it sits *above* anything you append — so a rule added
+with `-A` is never reached. It has to go in above the REJECT, and the position
+of that rule varies between images. Find it rather than assuming:
 
 ```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+sudo iptables -L INPUT --line-numbers -n
 ```
 
+Insert both ports above that line number, substituting it for `N`:
+
 ```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+sudo iptables -I INPUT N -m state --state NEW -p tcp --dport 80 -j ACCEPT && sudo iptables -I INPUT N -m state --state NEW -p tcp --dport 443 -j ACCEPT
+```
+
+Confirm they landed above the REJECT, then persist them:
+
+```bash
+sudo iptables -L INPUT --line-numbers -n
 ```
 
 ```bash
 sudo netfilter-persistent save
 ```
 
-Check the rules landed above the REJECT line:
-
-```bash
-sudo iptables -L INPUT --line-numbers -n | head -12
-```
+Order is the whole point here. Rules below the REJECT are still listed, still
+look correct at a glance, and do nothing at all.
 
 ---
 
