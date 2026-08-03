@@ -28,12 +28,46 @@ splitting them across hostnames breaks sign-in.
 
 ## Before you start
 
-- An OCI instance with a **public IP**. Ampere A1 (ARM64) is fine — every
-  dependency here has an aarch64 build, including `@node-rs/argon2`.
+- An OCI instance with a **public IP**. See the recommendation below.
 - **Ubuntu 22.04 or 24.04** assumed below. Oracle Linux works with `dnf` in
   place of `apt`.
 - A domain you control, for a subdomain like `console.yourdomain.com`.
 - Your Supabase **database connection string** and **service role key**.
+
+### Which instance
+
+| | |
+|---|---|
+| Shape | `VM.Standard.A1.Flex`, **4 OCPU / 24 GB** |
+| Image | **Canonical Ubuntu 24.04 LTS (aarch64)** |
+| Boot volume | 50 GB (the default) |
+
+That is the whole Always Free Ampere allocation on one instance, at no cost.
+
+**ARM is safe here** — every native dependency ships an aarch64 glibc prebuild
+(`@node-rs/argon2-linux-arm64-gnu`, `@esbuild/linux-arm64`,
+`@rollup/rollup-linux-arm64-gnu`) and nothing compiles at install time. No
+toolchain needed.
+
+**Do not use the x86 free shape.** `VM.Standard.E2.1.Micro` has 1 GB of RAM;
+the Vite build alone will exhaust it, leaving you building locally and copying
+`dist/` up by hand on every deploy.
+
+24 GB is more than this needs — Postgres is in Supabase, so the box runs two
+mostly-idle Node processes and Caddy. 1 OCPU / 6 GB genuinely works. Take the
+larger shape only because it is free, and because the build is the one moment
+the machine works hard.
+
+**Expect a capacity fight.** "Out of host capacity" on A1 is chronic in busy
+regions and is not something you have configured wrong. In order of what
+actually helps: upgrade the account to Pay As You Go (Always Free resources stay
+free, but you gain capacity priority); try each availability domain separately;
+ask for 1 OCPU / 6 GB instead, since the shape can be resized later without
+rebuilding.
+
+Your home region is fixed at signup and cannot be changed afterwards. In the
+creation dialog, confirm a **public IPv4** is assigned and **save the SSH
+private key** — Oracle shows it once.
 
 ---
 
