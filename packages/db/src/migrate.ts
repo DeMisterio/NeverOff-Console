@@ -37,6 +37,10 @@ const PRODUCTION_TOUCHING = new Set([
   '0013_channel_governance.sql',
   // Creates the @support RPCs and grants EXECUTE to `authenticated`.
   '0014_support_tickets.sql',
+  // Rollup refresh reads public.messages, chats and channel_posts.
+  '0016_analytics_rollups.sql',
+  // Behavioural signals read public.messages and chat_participants metadata.
+  '0018_automod.sql',
 ]);
 
 /**

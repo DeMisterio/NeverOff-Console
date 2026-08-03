@@ -16,8 +16,10 @@ import { getConfig } from './config.js';
 import { ApiError, isApiError } from './errors.js';
 import authPlugin from './plugins/auth.js';
 import adminRoutes from './routes/admins.js';
+import analyticsRoutes from './routes/analytics.js';
 import auditRoutes from './routes/audit.js';
 import authRoutes from './routes/auth.js';
+import automodRoutes from './routes/automod.js';
 import channelRoutes from './routes/channels.js';
 import childSafetyRoutes from './routes/childsafety.js';
 import enforcementRoutes from './routes/enforcement.js';
@@ -129,6 +131,8 @@ export async function buildApp(): Promise<FastifyInstance> {
       servers: [{ url: `http://${config.API_HOST}:${config.API_PORT}` }],
       tags: [
         { name: 'auth', description: 'Sign-in, 2FA, sessions' },
+        { name: 'analytics', description: 'Rollup-backed dashboards and exports' },
+        { name: 'automod', description: 'Detection rules, shadow mode and measured precision' },
         { name: 'users', description: 'User directory and profiles' },
         { name: 'enforcement', description: 'The §3.3 action ladder and appeals' },
         { name: 'moderation', description: 'Report clustering, the case queue and decisions' },
@@ -157,6 +161,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(moderationRoutes, { prefix: '/api/moderation' });
   await app.register(channelRoutes, { prefix: '/api/channels' });
   await app.register(supportRoutes, { prefix: '/api/support' });
+  await app.register(analyticsRoutes, { prefix: '/api/analytics' });
+  await app.register(automodRoutes, { prefix: '/api/automod' });
   await app.register(adminRoutes, { prefix: '/api/admins' });
   await app.register(roleRoutes, { prefix: '/api/roles' });
   await app.register(auditRoutes, { prefix: '/api/audit' });

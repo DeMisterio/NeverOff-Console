@@ -38,20 +38,38 @@ Build-order steps 1, 2 and 4 are implemented (§10 of the spec):
 - **Step 1** — auth, RBAC, admin accounts, immutable audit log
 - **Step 2** — user directory, profiles, the §3.3 enforcement ladder, the ban experience
 - **Step 4** — report intake, case clustering, the prioritised moderation queue, decisions
+- **Step 3** — event rollups, dashboards, feature adoption, trust & safety KPIs
 - **Step 5** — `@support` ticketing, in-app and reachable while banned
 - **Step 6** — appeals and channel governance
+- **Step 7** — the automod rules engine, shadow-mode first
 - Plus **§8 privacy in full** and **§6.7 scaffolded**
 
-Step 3 was deferred rather than skipped. Steps 4–6 close the §11 acceptance flow end to end —
-report → clustered case → queue → 7-day ban → ban screen → appeal → *different* moderator → lift
-→ automatic restoration — and analytics is observability on top of a pipeline that now exists.
+### What the encryption rules out, and what it does not
 
-**Not yet built:** analytics dashboards and the event rollup pipeline (§2, step 3), and the
-automod rules engine (§6.6). The automod tables are referenced but the engine is not written.
+This comes up in every section, so it is worth stating once:
 
-**Known gap:** `disable_forwarding` records the state and the app can read it through
-`channel_restriction_state`, but nothing in the client consumes it yet, and §6.5's forward-chain
-tracking does not exist.
+- **Content-type splits on message volume are impossible.** The server holds ciphertext. Those
+  metrics come from client telemetry, which is consented-only, so they are a *sample* and every
+  response says so. Presenting a consented-user count as a platform total is not a rounding
+  error — it is a wrong number with a confident label.
+- **Keyword and regex automod rules cannot target private messages.** A database CHECK and an
+  API guard both refuse it, because a rule that can never fire reads as coverage and is not.
+- **Identical-content fan-out is not detectable.** Under ECDH the same sentence sent to twenty
+  people produces twenty unrelated ciphertexts. Not hard — absent. The spam-ring patterns §6.6
+  cares about are caught behaviourally instead: velocity, fan-out breadth, account age against
+  recipient count.
+
+What *is* a census: message counts, the sent → delivered → read funnel (`messages.status` is
+plaintext), channel posts in full, registrations, retention, and geography at country granularity.
+
+**Remaining gaps**, both real rather than merely unbuilt:
+
+- `disable_forwarding` records the state and the app can read it through
+  `channel_restriction_state`, but nothing in the client consumes it, and §6.5's forward-chain
+  tracking does not exist.
+- The automod engine has its schema, signals, shadow mode and quality measurement, but **no
+  evaluation loop** — nothing calls the signal functions on a schedule yet, so no rule has ever
+  fired. The rules ship in shadow mode, which is where they would start regardless.
 
 ---
 

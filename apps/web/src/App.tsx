@@ -7,9 +7,11 @@ import { useAuth } from './lib/auth';
 import { AdminsPage } from './pages/Admins';
 import { AppealsPage } from './pages/Appeals';
 import { AuditPage } from './pages/Audit';
+import { AutomodPage } from './pages/Automod';
 import { CaseDetailPage } from './pages/CaseDetail';
 import { ChannelDetailPage } from './pages/ChannelDetail';
 import { ChannelsPage } from './pages/Channels';
+import { DashboardPage } from './pages/Dashboard';
 import { LoginPage } from './pages/Login';
 import { QueuePage } from './pages/Queue';
 import { SupportPage } from './pages/Support';
@@ -32,12 +34,14 @@ interface NavEntry {
 }
 
 const NAV: NavEntry[] = [
-  // Queue first: it is where a moderator spends their shift.
+  { to: '/dashboard', label: 'Dashboard', permission: 'analytics.view' },
+  // Queue next: it is where a moderator spends their shift.
   { to: '/queue', label: 'Queue', permission: 'reports.view' },
   { to: '/users', label: 'Users', permission: 'users.view' },
   { to: '/channels', label: 'Channels', permission: 'channels.view' },
   { to: '/support', label: 'Support', permission: 'support.view' },
   { to: '/appeals', label: 'Appeals', permission: 'reports.view' },
+  { to: '/automod', label: 'Automod', permission: 'automod.configure' },
   { to: '/audit', label: 'Audit log', permission: 'audit.view' },
   { to: '/admins', label: 'Admins', permission: 'users.view' },
 ];
@@ -145,6 +149,16 @@ export function App() {
       />
 
       <Route
+        path="/dashboard"
+        element={
+          <RequireAuth>
+            <Guarded permission="analytics.view">
+              <DashboardPage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/queue"
         element={
           <RequireAuth>
@@ -220,6 +234,16 @@ export function App() {
           <RequireAuth>
             <Guarded permission="reports.view">
               <AppealsPage />
+            </Guarded>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/automod"
+        element={
+          <RequireAuth>
+            <Guarded permission="automod.configure">
+              <AutomodPage />
             </Guarded>
           </RequireAuth>
         }

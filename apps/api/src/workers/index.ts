@@ -1,6 +1,7 @@
 import { closePool, getPool } from '@neveroff-console/db';
 
 import { getConfig } from '../config.js';
+import { detectAutomodDrift } from './automod.js';
 import {
   captureChannelGrowth,
   detectChannelAnomalies,
@@ -8,6 +9,7 @@ import {
 } from './channels.js';
 import { deliverNotifications } from './notifications.js';
 import { purgeExpiredData } from './retention.js';
+import { refreshRollups } from './rollups.js';
 import { escalateAppeals, processExpiredEnforcements } from './enforcement-expiry.js';
 
 /**
@@ -56,6 +58,13 @@ const JOBS: Job[] = [
     run: deliverNotifications,
   },
   {
+    name: 'analytics-rollups',
+    // Five minutes. §2.6 wants a visible "data as of" rather than live numbers,
+    // and recomputing whole buckets more often than this is pure load.
+    intervalMs: 300_000,
+    run: refreshRollups,
+  },
+  {
     name: 'channel-growth-snapshot',
     // Hourly. The anomaly check compares a day against a fortnight, so
     // sampling more often buys nothing but rows.
@@ -66,6 +75,11 @@ const JOBS: Job[] = [
     name: 'channel-anomaly-detection',
     intervalMs: 3_600_000,
     run: detectChannelAnomalies,
+  },
+  {
+    name: 'automod-drift-detection',
+    intervalMs: 3_600_000,
+    run: detectAutomodDrift,
   },
   {
     name: 'retention-purge',
