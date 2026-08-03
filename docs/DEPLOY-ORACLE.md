@@ -108,10 +108,22 @@ closing either one produces the same symptom: the site simply times out.
 Networking → Virtual Cloud Networks → your VCN → Security Lists → default →
 Add Ingress Rules:
 
-| Source CIDR | Protocol | Destination Port |
-|---|---|---|
-| `0.0.0.0/0` | TCP | 80 |
-| `0.0.0.0/0` | TCP | 443 |
+| Source CIDR | Protocol | Destination Port | Why |
+|---|---|---|---|
+| `0.0.0.0/0` | TCP | 80 | Let's Encrypt validates over HTTP before it will issue, and again at every renewal. It cannot be closed afterwards. |
+| `0.0.0.0/0` | TCP | 443 | The console itself. |
+
+Leave the rules **stateful** (the default) and set Source Type to CIDR. Port 22
+already has a rule from instance creation; narrowing it to your own address is
+worthwhile, and costs nothing to change later from the OCI console.
+
+Leave **egress** alone. The default allow-all is required — the box reaches out
+to Supabase, Let's Encrypt, npm and Firebase, and nothing reaches in on those
+connections.
+
+Do **not** open 4000 or 5432. The API binds `127.0.0.1` and is reached only
+through Caddy, and Postgres is not on this machine at all. An exposed 4000 would
+be the API with no TLS and no reverse proxy in front of it.
 
 **b) The instance's own iptables**
 
@@ -147,6 +159,41 @@ this resolves:
 ```bash
 dig +short console.yourdomain.com
 ```
+
+### If you do not have a domain yet
+
+You need a hostname, not just an IP, and this is not merely about avoiding a
+browser warning. The session cookie is set with `secure: true` whenever
+`NODE_ENV=production`, so **a browser will refuse to store it over plain HTTP**.
+Sign-in appears to succeed and then drops you straight back to the login screen.
+Let's Encrypt will not issue a certificate for a bare IP address, so there is no
+way around this by ignoring warnings.
+
+The free path that works today, in about two minutes:
+
+1. Go to [duckdns.org](https://duckdns.org) and sign in with an existing account.
+2. Claim a subdomain, e.g. `neveroff-console` → `neveroff-console.duckdns.org`.
+3. Set its IP to your instance's public IP.
+
+Then use that hostname everywhere this guide says `console.yourdomain.com` — in
+`WEB_ORIGIN`, in the Caddyfile, and in the `dig` check. Everything else is
+unchanged, and Caddy will get a real, publicly trusted certificate.
+
+DuckDNS works for this specifically because `duckdns.org` is on the Public
+Suffix List, so your subdomain gets its own Let's Encrypt rate-limit budget.
+Wildcard-DNS services that map an IP into a shared domain do not, and you can
+find their weekly issuance already exhausted by strangers.
+
+Treat it as a way to get running, not a destination. This console can ban every
+user on your platform; leaving its address dependent on a free service you have
+no relationship with is a strange place to end up when a domain costs about ten
+dollars a year. Moving later is a DNS record, a line in `.env`, and a line in
+the Caddyfile.
+
+**Do not "temporarily" set `NODE_ENV=development` to dodge this.** It clears the
+`secure` flag and sign-in starts working over HTTP — while sending an admin
+session cookie in clear text over the public internet, which is precisely the
+credential worth stealing here.
 
 ---
 
