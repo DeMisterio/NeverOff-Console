@@ -1,11 +1,6 @@
-# NeverOff Admin & Trust/Safety Console
+# NeverOff Console
 
-Administration, analytics and moderation tooling for the NeverOff messenger.
-
-This is a **separate application** from the NeverOff Android app. It lives in its own repository
-and talks to the same Supabase project over the network. Nothing here is built into the app.
-
----
+NeverOff Console is the administration and trust-and-safety application for the [NeverOff Android messenger](https://github.com/DeMisterio/NeverOff). It runs separately and connects to the same Supabase database.
 
 ## Read this first: what this console can and cannot do
 
@@ -32,6 +27,8 @@ that weakens or bypasses E2EE for moderation convenience.
 ---
 
 ## Status
+
+The workspace package is version `0.1.0`. This repository has no separately distributed Console releases. The Android app has its own [release history](https://github.com/DeMisterio/NeverOff/releases).
 
 Build-order steps 1, 2 and 4 are implemented (§10 of the spec):
 
@@ -334,3 +331,7 @@ Two areas carry statutory weight and are **not** ordinary features:
   determinations.
 
 Engage counsel before this console handles a single real user.
+
+## License
+
+[MIT](LICENSE)
